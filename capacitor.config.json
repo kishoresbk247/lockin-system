@@ -1,0 +1,12 @@
+{
+  "appId": "com.lockin.system",
+  "appName": "Lock-In System",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}

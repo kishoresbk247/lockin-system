@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lock-In System</string>
+    <string name="title_activity_main">Lock-In System</string>
+    <string name="package_name">com.lockin.system</string>
+    <string name="custom_url_scheme">com.lockin.system</string>
+</resources>

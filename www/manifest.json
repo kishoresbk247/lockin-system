@@ -1,0 +1,19 @@
+{
+  "name": "The Lock-In System",
+  "short_name": "Lock-In",
+  "description": "A premium gamified habit tracker with ranks, streaks, and celebration animations.",
+  "start_url": "./habit_tracker.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0c10",
+  "theme_color": "#0b0c10",
+  "icons": [
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "health", "lifestyle"]
+}

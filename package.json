@@ -8,10 +8,13 @@
     "dev": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "sql.js": "^1.11.0",
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
     "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
-    "cors": "^2.8.5"
+    "sql.js": "^1.11.0"
   }
 }
