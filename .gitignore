@@ -1,0 +1,4 @@
+node_modules/
+lockin.db
+package-lock.json
+.netlify/
