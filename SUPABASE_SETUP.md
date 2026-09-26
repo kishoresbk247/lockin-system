@@ -29,6 +29,14 @@ npm start
 
 For real users, deploy this Express server to a public HTTPS host. All phones and browsers must call that same API URL.
 
+### Railway deployment
+
+1. Open [Railway](https://railway.app) and create a new project from the GitHub repository.
+2. Select `kishoresbk247/lockin-system` and deploy from the `main` branch.
+3. Add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `JWT_SECRET` as Railway variables.
+4. Generate a public domain in Railway's service settings.
+5. Verify `https://your-railway-domain/api/health` returns `{"ok":true}`.
+
 ## 4. Build Android
 
 Set the deployed API URL in both `api-config.js` and `www/api-config.js`:
