@@ -1,56 +1,69 @@
-# Supabase setup
+# Free deployment setup
 
-The app uses the Express API as its trusted server boundary. The API stores all users, habits, completion history, and friendships in Supabase. Do not put `SUPABASE_SERVICE_ROLE_KEY` in the browser or Android app.
-
-## 1. Create the database
-
-1. Create a Supabase project.
-2. Open **SQL Editor**.
-3. Run all of [supabase-schema.sql](supabase-schema.sql).
-4. Copy `.env.example` to `.env` and fill in `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a long random `JWT_SECRET`.
-
-The service-role key is only read by the Node server. RLS is enabled on the tables so direct public access is blocked.
-
-## 2. Keep existing local data
-
-Before removing `lockin.db`, run:
+The free architecture is:
 
 ```text
-npm run migrate:supabase
+GitHub Pages / Android APK -> Supabase Auth + Database
 ```
 
-The migration is safe to rerun for the same IDs. After importing explicit IDs, run the sequence statements at the end of `supabase-schema.sql`.
+There is no Railway or Express backend in the browser path. Supabase stores accounts, habits, completion history, and friend requests.
 
-## 3. Run the API
+## 1. Create Supabase tables
+
+Run all of [supabase-schema.sql](supabase-schema.sql) in Supabase SQL Editor.
+
+In Supabase Auth settings, disable **Confirm email**. This app uses username login by mapping each username to an internal synthetic email address.
+
+## 2. Configure the public client key
+
+Open **Project Settings -> API** in Supabase. Copy the public **anon/publishable key** into both:
+
+- `api-config.js`
+- `www/api-config.js`
+
+Set:
+
+```js
+window.LOCKIN_SUPABASE_URL = 'https://your-project.supabase.co';
+window.LOCKIN_SUPABASE_ANON_KEY = 'your-public-anon-key';
+```
+
+The anon key is intended for browser apps. Never put a `service_role` key in these files.
+
+## 3. Enable GitHub Pages
+
+The repository includes `.github/workflows/pages.yml`.
+
+1. Open the GitHub repository settings.
+2. Open **Pages**.
+3. Set the source to **GitHub Actions**.
+4. Push the configured public anon key to `main`.
+5. GitHub Actions will publish the `www` folder.
+
+The Pages URL will look like:
 
 ```text
-npm start
+https://kishoresbk247.github.io/lockin-system/
 ```
-
-For real users, deploy this Express server to a public HTTPS host. All phones and browsers must call that same API URL.
-
-### Railway deployment
-
-1. Open [Railway](https://railway.app) and create a new project from the GitHub repository.
-2. Select `kishoresbk247/lockin-system` and deploy from the `main` branch.
-3. Add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `JWT_SECRET` as Railway variables.
-4. Generate a public domain in Railway's service settings.
-5. Verify `https://your-railway-domain/api/health` returns `{"ok":true}`.
 
 ## 4. Build Android
 
-Set the deployed API URL in both `api-config.js` and `www/api-config.js`:
-
-```js
-window.LOCKIN_API_BASE = 'https://your-api.example.com';
-```
-
-Then sync and build the Capacitor project:
+After configuring the public anon key:
 
 ```text
 npx cap sync android
 cd android
-./gradlew assembleDebug
+gradlew.bat assembleDebug
 ```
 
-On Windows, use `gradlew.bat assembleDebug`. `localhost` inside an installed phone app means the phone itself, not your computer, so a public HTTPS API URL is required for shared access.
+The APK will be at:
+
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+The APK contains the same Supabase-connected frontend, so different phones share the same cloud data.
+
+## Limitations
+
+This avoids monthly backend hosting, but free plans still have quotas and may pause inactive projects. For roughly 50 users, monitor Supabase usage and backups. No service can promise unlimited free hosting forever.

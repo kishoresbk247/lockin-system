@@ -21,22 +21,15 @@
 <div id="app-root"></div>
 
 <script src="api-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase-client.js"></script>
 
 <!-- API Helper Layer -->
 <script>
-var API_BASE = window.LOCKIN_API_BASE || '';
 function getToken(){return localStorage.getItem('lockin_token')}
 function setToken(t){localStorage.setItem('lockin_token',t)}
 function clearToken(){localStorage.removeItem('lockin_token')}
-async function api(method,path,body){
-  var h={'Content-Type':'application/json'};
-  var t=getToken();
-  if(t) h['Authorization']='Bearer '+t;
-  var r=await fetch(API_BASE+path,{method:method,headers:h,body:body?JSON.stringify(body):undefined});
-  var d=await r.json();
-  if(!r.ok) throw new Error(d.error||'Request failed');
-  return d;
-}
+var api = window.lockinApi;
 </script>
 
 <style>
@@ -2249,8 +2242,9 @@ function LoginScreen({onLogin}){
     setError('');
     setLoading(true);
     try {
-      const endpoint = isRegister ? '/api/register' : '/api/login';
-      const data = await api('POST', endpoint, { username: username.trim(), password });
+      const data = isRegister
+        ? await window.lockinAuth.register(username.trim(), password)
+        : await window.lockinAuth.login(username.trim(), password);
       onLogin(data.user, data.token);
     } catch (e) {
       setError(e.message);
@@ -2539,14 +2533,13 @@ function App(){
 
   // Check auth on mount
   useEffect(() => {
-    const token = getToken();
-    if(!token){
-      setAuthState('logged_out');
-      return;
-    }
-    api('GET', '/api/me')
-      .then(data => {
-        setCurrentUser(data.user);
+    window.lockinAuth.restore()
+      .then(user => {
+        if(!user){
+          setAuthState('logged_out');
+          return;
+        }
+        setCurrentUser(user);
         setAuthState('logged_in');
         setShowGreeting(true);
       })
@@ -2591,6 +2584,7 @@ function App(){
   };
 
   const handleLogout = () => {
+    window.lockinAuth.logout().catch(() => {});
     clearToken();
     setCurrentUser(null);
     setHabits([]);

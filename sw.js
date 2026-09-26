@@ -3,6 +3,7 @@ const ASSETS = [
   './',
   './habit_tracker.html',
   './api-config.js',
+  './supabase-client.js',
   './icon-512.png',
   './manifest.json',
   'https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800;900&family=Rajdhani:wght@500;600;700&display=swap',
