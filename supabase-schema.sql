@@ -72,12 +72,24 @@ create policy users_update_self on public.users
   for update to authenticated using (auth_user_id = auth.uid()) with check (auth_user_id = auth.uid());
 
 drop policy if exists habits_owner_access on public.habits;
+drop policy if exists habits_friend_select on public.habits;
 create policy habits_owner_access on public.habits
   for all to authenticated
   using (exists (select 1 from public.users u where u.id = habits.user_id and u.auth_user_id = auth.uid()))
   with check (exists (select 1 from public.users u where u.id = habits.user_id and u.auth_user_id = auth.uid()));
 
+create policy habits_friend_select on public.habits
+  for select to authenticated using (exists (
+    select 1
+    from public.users viewer
+    join public.friend_requests fr on fr.status = 'accepted'
+      and ((fr.from_user_id = viewer.id and fr.to_user_id = habits.user_id)
+        or (fr.to_user_id = viewer.id and fr.from_user_id = habits.user_id))
+    where viewer.auth_user_id = auth.uid()
+  ));
+
 drop policy if exists history_owner_access on public.habit_history;
+drop policy if exists history_friend_select on public.habit_history;
 create policy history_owner_access on public.habit_history
   for all to authenticated
   using (exists (
@@ -89,6 +101,18 @@ create policy history_owner_access on public.habit_history
     select 1 from public.habits h
     join public.users u on u.id = h.user_id
     where h.id = habit_history.habit_id and u.auth_user_id = auth.uid()
+  ));
+
+create policy history_friend_select on public.habit_history
+  for select to authenticated using (exists (
+    select 1
+    from public.habits h
+    join public.users friend on friend.id = h.user_id
+    join public.users viewer on viewer.auth_user_id = auth.uid()
+    join public.friend_requests fr on fr.status = 'accepted'
+      and ((fr.from_user_id = viewer.id and fr.to_user_id = friend.id)
+        or (fr.to_user_id = viewer.id and fr.from_user_id = friend.id))
+    where h.id = habit_history.habit_id
   ));
 
 drop policy if exists friend_requests_access on public.friend_requests;
