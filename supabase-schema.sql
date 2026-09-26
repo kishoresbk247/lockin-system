@@ -92,8 +92,28 @@ create policy history_owner_access on public.habit_history
   ));
 
 drop policy if exists friend_requests_access on public.friend_requests;
-create policy friend_requests_access on public.friend_requests
-  for all to authenticated
+drop policy if exists friend_requests_select on public.friend_requests;
+drop policy if exists friend_requests_insert on public.friend_requests;
+drop policy if exists friend_requests_update on public.friend_requests;
+drop policy if exists friend_requests_delete on public.friend_requests;
+
+create policy friend_requests_select on public.friend_requests
+  for select to authenticated using (exists (
+    select 1 from public.users u
+    where (u.id = friend_requests.from_user_id or u.id = friend_requests.to_user_id)
+      and u.auth_user_id = auth.uid()
+  ));
+
+-- Only the authenticated user may create a request in their own name.
+create policy friend_requests_insert on public.friend_requests
+  for insert to authenticated with check (exists (
+    select 1 from public.users u
+    where friend_requests.from_user_id = u.id and u.auth_user_id = auth.uid()
+  ));
+
+-- Either participant may update the request; this allows the recipient to accept it.
+create policy friend_requests_update on public.friend_requests
+  for update to authenticated
   using (exists (
     select 1 from public.users u
     where (u.id = friend_requests.from_user_id or u.id = friend_requests.to_user_id)
@@ -101,7 +121,15 @@ create policy friend_requests_access on public.friend_requests
   ))
   with check (exists (
     select 1 from public.users u
-    where friend_requests.from_user_id = u.id and u.auth_user_id = auth.uid()
+    where (u.id = friend_requests.from_user_id or u.id = friend_requests.to_user_id)
+      and u.auth_user_id = auth.uid()
+  ));
+
+create policy friend_requests_delete on public.friend_requests
+  for delete to authenticated using (exists (
+    select 1 from public.users u
+    where (u.id = friend_requests.from_user_id or u.id = friend_requests.to_user_id)
+      and u.auth_user_id = auth.uid()
   ));
 
 -- Keep identity sequences correct when importing explicit IDs.
