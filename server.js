@@ -13,6 +13,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+app.get('/api/health', (req, res) => res.json({ ok: true }));
+
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: 'Not authenticated' });
