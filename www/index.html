@@ -20,11 +20,11 @@
 <body>
 <div id="app-root"></div>
 
+<script src="api-config.js"></script>
+
 <!-- API Helper Layer -->
 <script>
-// CHANGE THIS to your deployed backend URL (e.g. 'https://lockin-system.onrender.com')
-// Leave empty for same-origin (local development)
-var API_BASE = '';
+var API_BASE = window.LOCKIN_API_BASE || '';
 function getToken(){return localStorage.getItem('lockin_token')}
 function setToken(t){localStorage.setItem('lockin_token',t)}
 function clearToken(){localStorage.removeItem('lockin_token')}

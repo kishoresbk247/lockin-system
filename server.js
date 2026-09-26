@@ -13,13 +13,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// ============ AUTH MIDDLEWARE ============
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: 'Not authenticated' });
-  const token = header.replace('Bearer ', '');
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(header.replace('Bearer ', ''), JWT_SECRET);
     req.userId = decoded.userId;
     req.username = decoded.username;
     next();
@@ -28,7 +26,40 @@ function auth(req, res, next) {
   }
 }
 
-// ============ AUTH ROUTES ============
+async function getUser(db, userId) {
+  const { data, error } = await db.from('users').select('id, username, created_at').eq('id', userId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function getHabitWithHistory(db, habit) {
+  const { data: history, error } = await db.from('habit_history').select('date').eq('habit_id', habit.id);
+  if (error) throw error;
+  const historyObj = {};
+  history.forEach(row => { historyObj[row.date] = true; });
+  return { ...habit, history: historyObj };
+}
+
+async function getHabitsWithHistory(db, userId) {
+  const { data: habits, error } = await db.from('habits').select('*').eq('user_id', userId).order('created_at', { ascending: true });
+  if (error) throw error;
+  return Promise.all(habits.map(habit => getHabitWithHistory(db, habit)));
+}
+
+async function getFriendRequest(db, fromUserId, toUserId) {
+  const { data, error } = await db.from('friend_requests').select('*')
+    .eq('from_user_id', fromUserId).eq('to_user_id', toUserId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function areFriends(db, firstUserId, secondUserId) {
+  const [forward, reverse] = await Promise.all([
+    getFriendRequest(db, firstUserId, secondUserId),
+    getFriendRequest(db, secondUserId, firstUserId),
+  ]);
+  return (forward && forward.status === 'accepted') || (reverse && reverse.status === 'accepted');
+}
 
 app.post('/api/register', async (req, res) => {
   try {
@@ -39,15 +70,21 @@ app.post('/api/register', async (req, res) => {
     if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(400).json({ error: 'Username: letters, numbers, underscores only' });
 
     const db = await getDb();
-    const existing = db.queryOne('SELECT id FROM users WHERE username = ?', [username]);
+    const { data: existing, error: lookupError } = await db.from('users').select('id').ilike('username', username).maybeSingle();
+    if (lookupError) throw lookupError;
     if (existing) return res.status(409).json({ error: 'Username already taken' });
 
-    const hash = bcrypt.hashSync(password, 10);
-    const result = db.runSql('INSERT INTO users (username, password_hash) VALUES (?, ?)', [username, hash]);
-    db.saveDb();
+    const { data: user, error } = await db.from('users').insert({
+      username,
+      password_hash: bcrypt.hashSync(password, 10),
+    }).select('id, username').single();
+    if (error) {
+      if (error.code === '23505') return res.status(409).json({ error: 'Username already taken' });
+      throw error;
+    }
 
-    const token = jwt.sign({ userId: result.lastInsertRowid, username }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, user: { id: result.lastInsertRowid, username } });
+    const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user });
   } catch (e) {
     console.error('Register error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -60,10 +97,9 @@ app.post('/api/login', async (req, res) => {
     if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
 
     const db = await getDb();
-    const user = db.queryOne('SELECT * FROM users WHERE username = ?', [username]);
-    if (!user) return res.status(401).json({ error: 'Invalid username or password' });
-
-    if (!bcrypt.compareSync(password, user.password_hash)) {
+    const { data: user, error } = await db.from('users').select('*').ilike('username', username).maybeSingle();
+    if (error) throw error;
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
@@ -78,7 +114,7 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/me', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const user = db.queryOne('SELECT id, username, created_at FROM users WHERE id = ?', [req.userId]);
+    const user = await getUser(db, req.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
   } catch (e) {
@@ -87,21 +123,10 @@ app.get('/api/me', auth, async (req, res) => {
   }
 });
 
-// ============ HABIT ROUTES ============
-
 app.get('/api/habits', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const habits = db.queryAll('SELECT * FROM habits WHERE user_id = ? ORDER BY created_at ASC', [req.userId]);
-
-    const result = habits.map(h => {
-      const history = db.queryAll('SELECT date FROM habit_history WHERE habit_id = ?', [h.id]);
-      const historyObj = {};
-      history.forEach(row => { historyObj[row.date] = true; });
-      return { ...h, history: historyObj };
-    });
-
-    res.json({ habits: result });
+    res.json({ habits: await getHabitsWithHistory(db, req.userId) });
   } catch (e) {
     console.error('Get habits error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -112,25 +137,16 @@ app.post('/api/habits', auth, async (req, res) => {
   try {
     const { name, sub, icon, color } = req.body;
     if (!name) return res.status(400).json({ error: 'Habit name required' });
-
     const db = await getDb();
-    const result = db.runSql(
-      'INSERT INTO habits (user_id, name, sub, icon, color) VALUES (?, ?, ?, ?, ?)',
-      [req.userId, name, sub || '', icon || '\uD83D\uDCAA', color || '#7c5cff']
-    );
-    db.saveDb();
-
-    res.json({
-      habit: {
-        id: result.lastInsertRowid,
-        user_id: req.userId,
-        name,
-        sub: sub || '',
-        icon: icon || '\uD83D\uDCAA',
-        color: color || '#7c5cff',
-        history: {}
-      }
-    });
+    const { data: habit, error } = await db.from('habits').insert({
+      user_id: req.userId,
+      name,
+      sub: sub || '',
+      icon: icon || '💪',
+      color: color || '#7c5cff',
+    }).select('*').single();
+    if (error) throw error;
+    res.json({ habit: { ...habit, history: {} } });
   } catch (e) {
     console.error('Create habit error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -140,12 +156,12 @@ app.post('/api/habits', auth, async (req, res) => {
 app.delete('/api/habits/:id', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const habit = db.queryOne('SELECT * FROM habits WHERE id = ? AND user_id = ?', [Number(req.params.id), req.userId]);
+    const habitId = Number(req.params.id);
+    const { data: habit, error: findError } = await db.from('habits').select('id').eq('id', habitId).eq('user_id', req.userId).maybeSingle();
+    if (findError) throw findError;
     if (!habit) return res.status(404).json({ error: 'Habit not found' });
-
-    db.runSql('DELETE FROM habit_history WHERE habit_id = ?', [Number(req.params.id)]);
-    db.runSql('DELETE FROM habits WHERE id = ?', [Number(req.params.id)]);
-    db.saveDb();
+    const { error } = await db.from('habits').delete().eq('id', habitId).eq('user_id', req.userId);
+    if (error) throw error;
     res.json({ success: true });
   } catch (e) {
     console.error('Delete habit error:', e);
@@ -157,24 +173,25 @@ app.post('/api/habits/:id/toggle', auth, async (req, res) => {
   try {
     const { date } = req.body;
     if (!date) return res.status(400).json({ error: 'Date required' });
-
     const db = await getDb();
     const habitId = Number(req.params.id);
-    const habit = db.queryOne('SELECT * FROM habits WHERE id = ? AND user_id = ?', [habitId, req.userId]);
+    const { data: habit, error: habitError } = await db.from('habits').select('id').eq('id', habitId).eq('user_id', req.userId).maybeSingle();
+    if (habitError) throw habitError;
     if (!habit) return res.status(404).json({ error: 'Habit not found' });
 
-    const existing = db.queryOne('SELECT id FROM habit_history WHERE habit_id = ? AND date = ?', [habitId, date]);
+    const { data: existing, error: findError } = await db.from('habit_history').select('id').eq('habit_id', habitId).eq('date', date).maybeSingle();
+    if (findError) throw findError;
     if (existing) {
-      db.runSql('DELETE FROM habit_history WHERE habit_id = ? AND date = ?', [habitId, date]);
+      const { error } = await db.from('habit_history').delete().eq('id', existing.id);
+      if (error) throw error;
     } else {
-      db.runSql('INSERT INTO habit_history (habit_id, date) VALUES (?, ?)', [habitId, date]);
+      const { error } = await db.from('habit_history').insert({ habit_id: habitId, date });
+      if (error) throw error;
     }
-    db.saveDb();
-
-    const history = db.queryAll('SELECT date FROM habit_history WHERE habit_id = ?', [habitId]);
+    const { data: history, error: historyError } = await db.from('habit_history').select('date').eq('habit_id', habitId);
+    if (historyError) throw historyError;
     const historyObj = {};
     history.forEach(row => { historyObj[row.date] = true; });
-
     res.json({ toggled: !existing, history: historyObj });
   } catch (e) {
     console.error('Toggle error:', e);
@@ -182,19 +199,14 @@ app.post('/api/habits/:id/toggle', auth, async (req, res) => {
   }
 });
 
-// ============ FRIEND ROUTES ============
-
 app.get('/api/users/search', auth, async (req, res) => {
   try {
     const { q } = req.query;
     if (!q || q.length < 2) return res.json({ users: [] });
-
     const db = await getDb();
-    const users = db.queryAll(
-      'SELECT id, username FROM users WHERE username LIKE ? AND id != ? LIMIT 10',
-      [`%${q}%`, req.userId]
-    );
-    res.json({ users });
+    const { data, error } = await db.from('users').select('id, username').ilike('username', `%${q}%`).neq('id', req.userId).limit(10);
+    if (error) throw error;
+    res.json({ users: data });
   } catch (e) {
     console.error('Search error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -205,41 +217,33 @@ app.post('/api/friends/request', auth, async (req, res) => {
   try {
     const { username } = req.body;
     if (!username) return res.status(400).json({ error: 'Username required' });
-
     const db = await getDb();
-    const toUser = db.queryOne('SELECT id FROM users WHERE username = ?', [username]);
+    const { data: toUser, error: userError } = await db.from('users').select('id').ilike('username', username).maybeSingle();
+    if (userError) throw userError;
     if (!toUser) return res.status(404).json({ error: 'User not found' });
     if (toUser.id === req.userId) return res.status(400).json({ error: 'Cannot send request to yourself' });
+    if (await areFriends(db, req.userId, toUser.id)) return res.status(400).json({ error: 'Already friends' });
 
-    const alreadyFriends = db.queryOne(
-      `SELECT id FROM friend_requests WHERE status = 'accepted' AND (
-        (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))`,
-      [req.userId, toUser.id, toUser.id, req.userId]
-    );
-    if (alreadyFriends) return res.status(400).json({ error: 'Already friends' });
-
-    const existingRequest = db.queryOne(
-      `SELECT id, status, from_user_id FROM friend_requests
-       WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)`,
-      [req.userId, toUser.id, toUser.id, req.userId]
-    );
-
-    if (existingRequest) {
-      if (existingRequest.status === 'pending') {
-        if (existingRequest.from_user_id === toUser.id) {
-          db.runSql("UPDATE friend_requests SET status = 'accepted' WHERE id = ?", [existingRequest.id]);
-          db.saveDb();
+    const forward = await getFriendRequest(db, req.userId, toUser.id);
+    const reverse = await getFriendRequest(db, toUser.id, req.userId);
+    const existing = forward || reverse;
+    if (existing) {
+      if (existing.status === 'pending') {
+        if (existing.from_user_id === toUser.id) {
+          const { error } = await db.from('friend_requests').update({ status: 'accepted' }).eq('id', existing.id);
+          if (error) throw error;
           return res.json({ message: 'Friend request accepted! You are now friends.', autoAccepted: true });
         }
         return res.status(400).json({ error: 'Friend request already sent' });
       }
-      if (existingRequest.status === 'rejected') {
-        db.runSql('DELETE FROM friend_requests WHERE id = ?', [existingRequest.id]);
+      if (existing.status === 'rejected') {
+        const { error } = await db.from('friend_requests').delete().eq('id', existing.id);
+        if (error) throw error;
       }
     }
 
-    db.runSql('INSERT INTO friend_requests (from_user_id, to_user_id) VALUES (?, ?)', [req.userId, toUser.id]);
-    db.saveDb();
+    const { error } = await db.from('friend_requests').insert({ from_user_id: req.userId, to_user_id: toUser.id });
+    if (error) throw error;
     res.json({ message: 'Friend request sent!' });
   } catch (e) {
     console.error('Friend request error:', e);
@@ -250,72 +254,59 @@ app.post('/api/friends/request', auth, async (req, res) => {
 app.get('/api/friends/requests', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const incoming = db.queryAll(
-      `SELECT fr.id, fr.from_user_id, fr.created_at, u.username
-       FROM friend_requests fr JOIN users u ON u.id = fr.from_user_id
-       WHERE fr.to_user_id = ? AND fr.status = 'pending' ORDER BY fr.created_at DESC`,
-      [req.userId]
-    );
-    const sent = db.queryAll(
-      `SELECT fr.id, fr.to_user_id, fr.created_at, u.username
-       FROM friend_requests fr JOIN users u ON u.id = fr.to_user_id
-       WHERE fr.from_user_id = ? AND fr.status = 'pending' ORDER BY fr.created_at DESC`,
-      [req.userId]
-    );
-    res.json({ incoming, sent });
+    const { data: incoming, error: incomingError } = await db.from('friend_requests').select('id, from_user_id, created_at').eq('to_user_id', req.userId).eq('status', 'pending').order('created_at', { ascending: false });
+    if (incomingError) throw incomingError;
+    const { data: sent, error: sentError } = await db.from('friend_requests').select('id, to_user_id, created_at').eq('from_user_id', req.userId).eq('status', 'pending').order('created_at', { ascending: false });
+    if (sentError) throw sentError;
+    const ids = [...incoming.map(r => r.from_user_id), ...sent.map(r => r.to_user_id)];
+    let users = [];
+    if (ids.length) {
+      const { data, error } = await db.from('users').select('id, username').in('id', ids);
+      if (error) throw error;
+      users = data;
+    }
+    const names = new Map(users.map(user => [user.id, user.username]));
+    res.json({
+      incoming: incoming.map(row => ({ ...row, username: names.get(row.from_user_id) })),
+      sent: sent.map(row => ({ ...row, username: names.get(row.to_user_id) })),
+    });
   } catch (e) {
     console.error('Get requests error:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/friends/accept/:requestId', auth, async (req, res) => {
+async function updateFriendRequest(req, res, status, message) {
   try {
     const db = await getDb();
-    const request = db.queryOne(
-      "SELECT * FROM friend_requests WHERE id = ? AND to_user_id = ? AND status = 'pending'",
-      [Number(req.params.requestId), req.userId]
-    );
+    const { data: request, error: findError } = await db.from('friend_requests').select('id').eq('id', Number(req.params.requestId)).eq('to_user_id', req.userId).eq('status', 'pending').maybeSingle();
+    if (findError) throw findError;
     if (!request) return res.status(404).json({ error: 'Request not found' });
-
-    db.runSql("UPDATE friend_requests SET status = 'accepted' WHERE id = ?", [Number(req.params.requestId)]);
-    db.saveDb();
-    res.json({ message: 'Friend request accepted!' });
+    const { error } = await db.from('friend_requests').update({ status }).eq('id', request.id);
+    if (error) throw error;
+    res.json({ message });
   } catch (e) {
-    console.error('Accept error:', e);
+    console.error(`${status} request error:`, e);
     res.status(500).json({ error: 'Server error' });
   }
-});
+}
 
-app.post('/api/friends/reject/:requestId', auth, async (req, res) => {
-  try {
-    const db = await getDb();
-    const request = db.queryOne(
-      "SELECT * FROM friend_requests WHERE id = ? AND to_user_id = ? AND status = 'pending'",
-      [Number(req.params.requestId), req.userId]
-    );
-    if (!request) return res.status(404).json({ error: 'Request not found' });
-
-    db.runSql("UPDATE friend_requests SET status = 'rejected' WHERE id = ?", [Number(req.params.requestId)]);
-    db.saveDb();
-    res.json({ message: 'Friend request rejected' });
-  } catch (e) {
-    console.error('Reject error:', e);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+app.post('/api/friends/accept/:requestId', (req, res) => updateFriendRequest(req, res, 'accepted', 'Friend request accepted!'));
+app.post('/api/friends/reject/:requestId', (req, res) => updateFriendRequest(req, res, 'rejected', 'Friend request rejected'));
 
 app.get('/api/friends', auth, async (req, res) => {
   try {
     const db = await getDb();
-    const friends = db.queryAll(
-      `SELECT u.id, u.username, u.created_at FROM users u
-       WHERE u.id IN (
-         SELECT CASE WHEN from_user_id = ? THEN to_user_id ELSE from_user_id END
-         FROM friend_requests WHERE status = 'accepted' AND (from_user_id = ? OR to_user_id = ?)
-       )`,
-      [req.userId, req.userId, req.userId]
-    );
+    const [outgoing, incoming] = await Promise.all([
+      db.from('friend_requests').select('to_user_id').eq('from_user_id', req.userId).eq('status', 'accepted'),
+      db.from('friend_requests').select('from_user_id').eq('to_user_id', req.userId).eq('status', 'accepted'),
+    ]);
+    if (outgoing.error) throw outgoing.error;
+    if (incoming.error) throw incoming.error;
+    const ids = [...outgoing.data.map(row => row.to_user_id), ...incoming.data.map(row => row.from_user_id)];
+    if (!ids.length) return res.json({ friends: [] });
+    const { data: friends, error } = await db.from('users').select('id, username, created_at').in('id', ids);
+    if (error) throw error;
     res.json({ friends });
   } catch (e) {
     console.error('Get friends error:', e);
@@ -327,26 +318,10 @@ app.get('/api/friends/:userId/portfolio', auth, async (req, res) => {
   try {
     const db = await getDb();
     const friendId = Number(req.params.userId);
-
-    const areFriends = db.queryOne(
-      `SELECT id FROM friend_requests WHERE status = 'accepted' AND (
-        (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))`,
-      [req.userId, friendId, friendId, req.userId]
-    );
-    if (!areFriends) return res.status(403).json({ error: 'Not friends with this user' });
-
-    const user = db.queryOne('SELECT id, username, created_at FROM users WHERE id = ?', [friendId]);
+    if (!(await areFriends(db, req.userId, friendId))) return res.status(403).json({ error: 'Not friends with this user' });
+    const user = await getUser(db, friendId);
     if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const habits = db.queryAll('SELECT * FROM habits WHERE user_id = ? ORDER BY created_at ASC', [friendId]);
-    const result = habits.map(h => {
-      const history = db.queryAll('SELECT date FROM habit_history WHERE habit_id = ?', [h.id]);
-      const historyObj = {};
-      history.forEach(row => { historyObj[row.date] = true; });
-      return { ...h, history: historyObj };
-    });
-
-    res.json({ user, habits: result });
+    res.json({ user, habits: await getHabitsWithHistory(db, friendId) });
   } catch (e) {
     console.error('Portfolio error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -357,12 +332,13 @@ app.delete('/api/friends/:userId', auth, async (req, res) => {
   try {
     const db = await getDb();
     const friendId = Number(req.params.userId);
-    db.runSql(
-      `DELETE FROM friend_requests WHERE status = 'accepted' AND (
-        (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))`,
-      [req.userId, friendId, friendId, req.userId]
-    );
-    db.saveDb();
+    const first = await getFriendRequest(db, req.userId, friendId);
+    const second = await getFriendRequest(db, friendId, req.userId);
+    const ids = [first, second].filter(Boolean).filter(row => row.status === 'accepted').map(row => row.id);
+    if (ids.length) {
+      const { error } = await db.from('friend_requests').delete().in('id', ids);
+      if (error) throw error;
+    }
     res.json({ success: true });
   } catch (e) {
     console.error('Remove friend error:', e);
@@ -370,21 +346,11 @@ app.delete('/api/friends/:userId', auth, async (req, res) => {
   }
 });
 
-// ============ SERVE FRONTEND ============
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'habit_tracker.html'));
-});
-
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'habit_tracker.html')));
 app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api/')) {
-    res.sendFile(path.join(__dirname, 'habit_tracker.html'));
-  }
+  if (!req.path.startsWith('/api/')) res.sendFile(path.join(__dirname, 'habit_tracker.html'));
 });
 
-// ============ START SERVER ============
-(async () => {
-  await getDb(); // Initialize database before starting
-  app.listen(PORT, () => {
-    console.log(`\n  \uD83D\uDD12 Lock-In System server running on http://localhost:${PORT}\n`);
-  });
-})();
+app.listen(PORT, () => {
+  console.log(`\n  Lock-In System server running on http://localhost:${PORT}\n`);
+});
