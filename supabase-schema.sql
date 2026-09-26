@@ -39,6 +39,21 @@ create table if not exists public.friend_requests (
   unique (from_user_id, to_user_id)
 );
 
+-- Upgrade installations that used the previous server-backed schema.
+alter table public.users add column if not exists auth_user_id uuid;
+alter table public.users drop column if exists password_hash;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'users_auth_user_id_fkey'
+  ) then
+    alter table public.users
+      add constraint users_auth_user_id_fkey
+      foreign key (auth_user_id) references auth.users(id) on delete cascade;
+  end if;
+end $$;
+create unique index if not exists users_auth_user_id_idx on public.users(auth_user_id);
+
 alter table public.users enable row level security;
 alter table public.habits enable row level security;
 alter table public.habit_history enable row level security;
